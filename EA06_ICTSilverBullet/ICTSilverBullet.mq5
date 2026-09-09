@@ -1,70 +1,68 @@
 //+------------------------------------------------------------------+
-//|                                   Claude_MA_Crossover_EA.mq5     |
-//|                                 Generated based on Video Concept |
+//|                                           SilverBulletEA_YT.mq5  |
+//|                                 Created based on René Balke Video|
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2026"
-#property link      "https://www.mql5.com"
-#property version   "1.00"
-#property strict
+#include <Trade/Trade.mqh>
 
-#include <Trade\Trade.mqh>
-
-//--- Enums untuk Lot Management
-enum ENUM_LOT_TYPE
+//--- Class untuk Menyimpan dan Menggambar Fair Value Gap (FVG)
+class CFairValueGap : public CObject
   {
-   LOT_FIXED,   // Fixed Lot Size
-   LOT_RISK     // Risk in Money Amount ($)
+public:
+   int      direction; // 1 = Up (Bullish), -1 = Down (Bearish)
+   datetime time;
+   double   high;
+   double   low;
+
+   void Draw(datetime timeStart, datetime timeEnd)
+     {
+      string fvgName = "SilverBullet_FVG_" + TimeToString(time);
+      ObjectCreate(0, fvgName, OBJ_RECTANGLE, 0, time, low, timeStart, high);
+      ObjectSetInteger(0, fvgName, OBJPROP_FILL, true);
+      ObjectSetInteger(0, fvgName, OBJPROP_COLOR, clrLightGray);
+
+      string tradeArea = "SilverBullet_Trade_" + TimeToString(time);
+      ObjectCreate(0, tradeArea, OBJ_RECTANGLE, 0, timeStart, low, timeEnd, high);
+      ObjectSetInteger(0, tradeArea, OBJPROP_FILL, true);
+      ObjectSetInteger(0, tradeArea, OBJPROP_COLOR, clrGray);
+     }
+
+   void DrawTradeLevels(datetime timeStart, datetime timeEnd, double tp, double sl)
+     {
+      string tpName = "SilverBullet_TP_" + TimeToString(time);
+      ObjectCreate(0, tpName, OBJ_RECTANGLE, 0, timeStart, (direction > 0 ? high : low), timeEnd, tp);
+      ObjectSetInteger(0, tpName, OBJPROP_FILL, true);
+      ObjectSetInteger(0, tpName, OBJPROP_COLOR, clrLightGreen);
+
+      string slName = "SilverBullet_SL_" + TimeToString(time);
+      ObjectCreate(0, slName, OBJ_RECTANGLE, 0, timeStart, (direction > 0 ? low : high), timeEnd, sl);
+      ObjectSetInteger(0, slName, OBJPROP_FILL, true);
+      ObjectSetInteger(0, slName, OBJPROP_COLOR, clrOrange);
+     }
   };
 
-//--- Input Parameters (Sesuai Spesifikasi Transkrip Video)
+//--- Input Parameters
 input group "=== Trade Settings ==="
-input ENUM_LOT_TYPE InpLotType     = LOT_RISK;    // Lot Calculation Type
-input double        InpFixedLot    = 0.01;        // Fixed Lot Size
-input double        InpRiskMoney   = 100.0;       // Risk Amount in Money ($)
-input ulong         InpMagicNumber = 123456;      // Magic Number
+input double          InpLots             = 0.0;     // Fixed Lot (Isi 0 jika pakai Risk %)
+input double          InpRiskPercent      = 0.5;     // Risk per Trade (%)
+input double          InpMinTpPoints      = 150;     // Minimum TP (Points)
+input ENUM_TIMEFRAMES InpTimeframe        = PERIOD_M5; // Timeframe Pencarian FVG
+input ulong           InpMagicNumber      = 777123;
 
-input group "=== Stop Loss & Take Profit (In Points) ==="
-input double        InpStopLoss    = 200;         // Stop Loss (Points, 0 = Disabled)
-input double        InpTakeProfit  = 400;         // Take Profit (Points, 0 = Disabled)
-input double        InpTrailingStop= 100;         // Trailing Stop Distance (Points, 0 = Disabled)
-
-input group "=== Fast Moving Average Settings ==="
-input int                  InpFastMAPeriod = 10;           // Fast MA Period
-input int                  InpFastMAShift  = 0;            // Fast MA Shift
-input ENUM_MA_METHOD       InpFastMAMethod = MODE_SMA;     // Fast MA Method
-input ENUM_APPLIED_PRICE   InpFastMAPrice  = PRICE_CLOSE;  // Fast MA Applied Price
-
-input group "=== Slow Moving Average Settings ==="
-input int                  InpSlowMAPeriod = 20;           // Slow MA Period
-input int                  InpSlowMAShift  = 0;            // Slow MA Shift
-input ENUM_MA_METHOD       InpSlowMAMethod = MODE_SMA;     // Slow MA Method
-input ENUM_APPLIED_PRICE   InpSlowMAPrice  = PRICE_CLOSE;  // Slow MA Applied Price
+input group "=== Session Time Settings ==="
+input int             InpStartHour        = 3;       // Start Hour (New York / Session Time)
+input int             InpEndHour          = 4;       // End Hour
 
 //--- Global Variables
 CTrade         trade;
-int            handleFastMA;
-int            handleSlowMA;
-datetime       lastBarTime;
+CFairValueGap *fvg = NULL;
+int            lastDay = -1;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   // Set Magic Number untuk isolasi transaksi
    trade.SetExpertMagicNumber(InpMagicNumber);
-
-   // Inisialisasi Handles Indikator MA
-   handleFastMA = iMA(_Symbol, _Period, InpFastMAPeriod, InpFastMAShift, InpFastMAMethod, InpFastMAPrice);
-   handleSlowMA = iMA(_Symbol, _Period, InpSlowMAPeriod, InpSlowMAShift, InpSlowMAMethod, InpSlowMAPrice);
-
-   if(handleFastMA == INVALID_HANDLE || handleSlowMA == INVALID_HANDLE)
-     {
-      Print("Error: Gagal menginisialisasi indikator Moving Average.");
-      return(INIT_FAILED);
-     }
-
-   lastBarTime = 0;
    return(INIT_SUCCEEDED);
   }
 
@@ -73,8 +71,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   if(handleFastMA != INVALID_HANDLE) IndicatorRelease(handleFastMA);
-   if(handleSlowMA != INVALID_HANDLE) IndicatorRelease(handleSlowMA);
+   ObjectsDeleteAll(0, "SilverBullet");
+   if(CheckPointer(fvg) != POINTER_INVALID)
+      delete fvg;
   }
 
 //+------------------------------------------------------------------+
@@ -82,173 +81,173 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   // 1. Trailing Stop dijalankan pada setiap tick
-   if(InpTrailingStop > 0)
-      ApplyTrailingStop();
+   MqlDateTime structTime;
+   TimeToStruct(TimeCurrent(), structTime);
 
-   // 2. Filter Bar Baru (Logika Entry/Cross hanya dieksekusi saat bar ditutup)
-   datetime currentBarTime = iTime(_Symbol, _Period, 0);
-   if(currentBarTime == lastBarTime)
-      return;
+   // Tentukan Waktu Mulai & Selesai Jendela Silver Bullet
+   structTime.sec = 0;
+   structTime.min = 0;
+   
+   structTime.hour = InpStartHour;
+   datetime timeStart = StructToTime(structTime);
+   
+   structTime.hour = InpEndHour;
+   datetime timeEnd = StructToTime(structTime);
 
-   // Pembacaan Nilai MA untuk Bar 1 (tertutup) dan Bar 2
-   double fastMA[];
-   double slowMA[];
-   ArraySetAsSeries(fastMA, true);
-   ArraySetAsSeries(slowMA, true);
+   datetime now = TimeCurrent();
 
-   if(CopyBuffer(handleFastMA, 0, 1, 2, fastMA) < 2 ||
-      CopyBuffer(handleSlowMA, 0, 1, 2, slowMA) < 2)
-      return;
-
-   // 3. Deteksi Crossover
-   bool buySignal  = (fastMA[1] > slowMA[1]) && (fastMA[0] <= slowMA[0]); // Fast MA memotong Slow MA ke atas
-   bool sellSignal = (fastMA[1] < slowMA[1]) && (fastMA[0] >= slowMA[0]); // Fast MA memotong Slow MA ke bawah
-
-   if(buySignal)
+   // 1. FILTER WAKTU SESI (Trading Window)
+   if(now >= timeStart && now <= timeEnd)
      {
-      lastBarTime = currentBarTime;
-      ClosePositions(POSITION_TYPE_SELL); // Tutup posisi berlawanan (Sell) jika ada
-
-      if(!HasOpenPosition(POSITION_TYPE_BUY))
+      // Hanya eksekusi 1 pencarian per hari
+      if(lastDay != structTime.day_of_year)
         {
-         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double sl  = (InpStopLoss > 0) ? ask - (InpStopLoss * _Point) : 0;
-         double tp  = (InpTakeProfit > 0) ? ask + (InpTakeProfit * _Point) : 0;
-         double lot = CalculateLotSize(InpStopLoss);
-
-         trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "MA_Cross_Buy");
-        }
-     }
-   else if(sellSignal)
-     {
-      lastBarTime = currentBarTime;
-      ClosePositions(POSITION_TYPE_BUY); // Tutup posisi berlawanan (Buy) jika ada
-
-      if(!HasOpenPosition(POSITION_TYPE_SELL))
-        {
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         double sl  = (InpStopLoss > 0) ? bid + (InpStopLoss * _Point) : 0;
-         double tp  = (InpTakeProfit > 0) ? bid - (InpTakeProfit * _Point) : 0;
-         double lot = CalculateLotSize(InpStopLoss);
-
-         trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "MA_Cross_Sell");
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Perhitungan Ukuran Lot Sesuai Risiko $ Nominal                   |
-//+------------------------------------------------------------------+
-double CalculateLotSize(double slPoints)
-  {
-   if(InpLotType == LOT_FIXED)
-      return InpFixedLot;
-
-   double lot = InpFixedLot;
-   if(slPoints > 0)
-     {
-      double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-      double lossPerLot = (slPoints * _Point / tickSize) * tickValue;
-
-      if(lossPerLot > 0)
-         lot = InpRiskMoney / lossPerLot;
-     }
-
-   // Penyesuaian ke batas lot instrumen broker
-   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-
-   lot = MathFloor(lot / stepLot) * stepLot;
-   if(lot < minLot) lot = minLot;
-   if(lot > maxLot) lot = maxLot;
-
-   return lot;
-  }
-
-//+------------------------------------------------------------------+
-//| Menutup Posisi Berdasarkan Tipe Posisi                            |
-//+------------------------------------------------------------------+
-void ClosePositions(ENUM_POSITION_TYPE posType)
-  {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-
-      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
-         PositionGetInteger(POSITION_MAGIC) == InpMagicNumber &&
-         PositionGetInteger(POSITION_TYPE) == posType)
-        {
-         trade.PositionClose(ticket);
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Memeriksa Apakah Ada Posisi Aktif                                |
-//+------------------------------------------------------------------+
-bool HasOpenPosition(ENUM_POSITION_TYPE posType)
-  {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-
-      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
-         PositionGetInteger(POSITION_MAGIC) == InpMagicNumber &&
-         PositionGetInteger(POSITION_TYPE) == posType)
-        {
-         return true;
-        }
-     }
-   return false;
-  }
-
-//+------------------------------------------------------------------+
-//| Logika Trailing Stop Berbasis Points                             |
-//+------------------------------------------------------------------+
-void ApplyTrailingStop()
-  {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-
-      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
-         PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-        {
-         ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-         double currentSL = PositionGetDouble(POSITION_SL);
-
-         if(type == POSITION_TYPE_BUY)
+         if(CheckPointer(fvg) != POINTER_INVALID)
            {
-            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            if(bid - openPrice > InpTrailingStop * _Point)
+            delete fvg;
+            fvg = NULL;
+           }
+
+         // Scan 100 candle ke belakang di timeframe internal untuk mencari FVG
+         for(int i = 1; i < 100; i++)
+           {
+            double low0  = iLow(_Symbol, InpTimeframe, i);
+            double high2 = iHigh(_Symbol, InpTimeframe, i + 2);
+
+            // Bullish FVG
+            if((low0 - high2) > InpMinTpPoints * _Point)
               {
-               double newSL = bid - (InpTrailingStop * _Point);
-               if(newSL > currentSL + _Point)
-                 {
-                  trade.PositionModify(ticket, NormalizeDouble(newSL, _Digits), PositionGetDouble(POSITION_TP));
-                 }
+               fvg = new CFairValueGap();
+               fvg.direction = 1;
+               fvg.time      = iTime(_Symbol, InpTimeframe, i + 1);
+               fvg.high      = low0;
+               fvg.low       = high2;
+               break;
+              }
+
+            double high0 = iHigh(_Symbol, InpTimeframe, i);
+            double low2  = iLow(_Symbol, InpTimeframe, i + 2);
+
+            // Bearish FVG
+            if((low2 - high0) > InpMinTpPoints * _Point)
+              {
+               fvg = new CFairValueGap();
+               fvg.direction = -1;
+               fvg.time      = iTime(_Symbol, InpTimeframe, i + 1);
+               fvg.high      = low2;
+               fvg.low       = high0;
+               break;
               }
            }
-         else if(type == POSITION_TYPE_SELL)
+
+         // Jika FVG Ditemukan, Validasi apakah harga sudah terlanjur menembus FVG
+         if(CheckPointer(fvg) != POINTER_INVALID)
            {
-            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            if(openPrice - ask > InpTrailingStop * _Point)
+            if(fvg.direction == 1)
               {
-               double newSL = ask + (InpTrailingStop * _Point);
-               if(newSL < currentSL - _Point || currentSL == 0)
+               int lowestIdx = iLowest(_Symbol, InpTimeframe, MODE_LOW, 10, 0);
+               if(iLow(_Symbol, InpTimeframe, lowestIdx) <= fvg.low)
                  {
-                  trade.PositionModify(ticket, NormalizeDouble(newSL, _Digits), PositionGetDouble(POSITION_TP));
+                  delete fvg;
+                  fvg = NULL;
+                 }
+               else
+                 {
+                  fvg.Draw(timeStart, timeEnd);
+                  lastDay = structTime.day_of_year;
+                 }
+              }
+            else if(fvg.direction == -1)
+              {
+               int highestIdx = iHighest(_Symbol, InpTimeframe, MODE_HIGH, 10, 0);
+               if(iHigh(_Symbol, InpTimeframe, highestIdx) >= fvg.high)
+                 {
+                  delete fvg;
+                  fvg = NULL;
+                 }
+               else
+                 {
+                  fvg.Draw(timeStart, timeEnd);
+                  lastDay = structTime.day_of_year;
                  }
               }
            }
         }
      }
+
+   // 2. LOGIKA ENTRY TRADE SAAT HARGA RETEST FVG
+   if(CheckPointer(fvg) != POINTER_INVALID)
+     {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      // --- BUY SETUP ---
+      if(fvg.direction == 1 && ask <= fvg.high)
+        {
+         int highIdx = iHighest(_Symbol, InpTimeframe, MODE_HIGH, 20, 0);
+         double tp   = iHigh(_Symbol, InpTimeframe, highIdx);
+         
+         int lowIdx  = iLowest(_Symbol, InpTimeframe, MODE_LOW, 5, 0);
+         double sl   = iLow(_Symbol, InpTimeframe, lowIdx);
+
+         if((tp - ask) >= InpMinTpPoints * _Point)
+           {
+            double lots = (InpLots > 0) ? InpLots : CalculateLots(ask - sl);
+            if(lots > 0)
+              {
+               fvg.DrawTradeLevels(timeStart, timeEnd, tp, sl);
+               trade.Buy(lots, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "ICT_SilverBullet_Buy");
+              }
+           }
+         // Hapus FVG agar tidak terjadi multiple trade di hari yang sama
+         delete fvg;
+         fvg = NULL;
+        }
+      // --- SELL SETUP ---
+      else if(fvg.direction == -1 && bid >= fvg.low)
+        {
+         int lowIdx  = iLowest(_Symbol, InpTimeframe, MODE_LOW, 20, 0);
+         double tp   = iLow(_Symbol, InpTimeframe, lowIdx);
+
+         int highIdx = iHighest(_Symbol, InpTimeframe, MODE_HIGH, 5, 0);
+         double sl   = iHigh(_Symbol, InpTimeframe, highIdx);
+
+         if((bid - tp) >= InpMinTpPoints * _Point)
+           {
+            double lots = (InpLots > 0) ? InpLots : CalculateLots(sl - bid);
+            if(lots > 0)
+              {
+               fvg.DrawTradeLevels(timeStart, timeEnd, tp, sl);
+               trade.Sell(lots, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "ICT_SilverBullet_Sell");
+              }
+           }
+         delete fvg;
+         fvg = NULL;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Fungsi Kalkulasi Variable Lot Size berdasarkan Risk %           |
+//+------------------------------------------------------------------+
+double CalculateLots(double slDistance)
+  {
+   if(slDistance <= 0) return 0.01;
+
+   double riskMoney = AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPercent / 100.0);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+
+   if(tickSize == 0 || tickValue == 0) return 0.01;
+
+   double moneyPerLot = (slDistance / tickSize) * tickValue;
+   if(moneyPerLot == 0) return 0.01;
+
+   double lots = NormalizeDouble(riskMoney / moneyPerLot, 2);
+   
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+
+   return MathMin(MathMax(lots, minLot), maxLot);
   }
 //+------------------------------------------------------------------+
